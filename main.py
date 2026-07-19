@@ -23,34 +23,28 @@ app = FastAPI()
 # -----------------------------
 # MongoDB Setup
 # -----------------------------
-#alextest
-#MONGO_URL = os.getenv("MONGO_URL")
-#client = pymongo.MongoClient(MONGO_URL)
-#db = client["docuchat"]
-#conversationcol = db["history"]
+MONGO_URL = os.getenv("MONGO_URL")
+client = pymongo.MongoClient(MONGO_URL)
+db = client["OnDoChat"]
+conversationcol = db["history"]
 
 
 def load_memory(session_id):
-    return []
-
-#alextest
-#    doc = conversationcol.find_one({"session_id": session_id})
-#    if not doc:
-#        return []
-#    conv = doc["conversation"]
-#    return [(conv[i], conv[i+1]) for i in range(0, len(conv), 2)]
+    doc = conversationcol.find_one({"session_id": session_id})
+    if not doc:
+        return []
+    conv = doc["conversation"]
+    return [(conv[i], conv[i+1]) for i in range(0, len(conv), 2)]
 
 
 def save_memory(session_id, user_msg, bot_msg):
-    pass
-#alextest
-#    doc = conversationcol.find_one({"session_id": session_id})
-#    if doc:
-#        conv = doc["conversation"]
-#        conv.extend([user_msg, bot_msg])
-#        conversationcol.update_one({"session_id": session_id}, {"$set": {"conversation": conv}})
-#    else:
-#        conversationcol.insert_one({"session_id": session_id, "conversation": [user_msg, bot_msg]})
+    doc = conversationcol.find_one({"session_id": session_id})
+    if doc:
+        conv = doc["conversation"]
+        conv.extend([user_msg, bot_msg])
+        conversationcol.update_one({"session_id": session_id}, {"$set": {"conversation": conv}})
+    else:
+        conversationcol.insert_one({"session_id": session_id, "conversation": [user_msg, bot_msg]})
 
 
 # -----------------------------
@@ -154,3 +148,49 @@ async def upload(file: UploadFile = File(...)):
     with open(file_location, "wb") as f:
         f.write(await file.read())
     return {"file_path": file_location}
+
+@app.get("/mongo-test")
+def mongo_test():
+    try:
+        # Try a simple ping
+        client.admin.command("ping")
+        return {"status": "ok", "message": "MongoDB connection successful"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/mongo-insert")
+def mongo_insert():
+    try:
+        testcol = client["OnDoChat"]["alextestapi"]
+        result = testcol.insert_one({
+            "msg": "hello from codespace",
+            "time": "now"
+        })
+        return {
+            "status": "ok",
+            "inserted_id": str(result.inserted_id)
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+@app.get("/mongo-read")
+def mongo_read():
+    try:
+        testcol = client["OnDoChat"]["alextestapi"]
+        docs = list(testcol.find())
+        # Convert ObjectId to string
+        for d in docs:
+            d["_id"] = str(d["_id"])
+        return {
+            "status": "ok",
+            "docs": docs
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
