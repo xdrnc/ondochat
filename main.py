@@ -132,8 +132,7 @@ Question:
     # -----------------------------
     # Save memory
     # -----------------------------
-    #alextest
-    #save_memory(session_id, request.user_input, bot_reply)
+    save_memory(session_id, request.user_input, bot_reply)
 
     return {
         "session_id": session_id,
