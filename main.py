@@ -23,28 +23,34 @@ app = FastAPI()
 # -----------------------------
 # MongoDB Setup
 # -----------------------------
-MONGO_URL = os.getenv("MONGO_URL")
-client = pymongo.MongoClient(MONGO_URL)
-db = client["docuchat"]
-conversationcol = db["history"]
+#alextest
+#MONGO_URL = os.getenv("MONGO_URL")
+#client = pymongo.MongoClient(MONGO_URL)
+#db = client["docuchat"]
+#conversationcol = db["history"]
 
 
 def load_memory(session_id):
-    doc = conversationcol.find_one({"session_id": session_id})
-    if not doc:
-        return []
-    conv = doc["conversation"]
-    return [(conv[i], conv[i+1]) for i in range(0, len(conv), 2)]
+    return []
+
+#alextest
+#    doc = conversationcol.find_one({"session_id": session_id})
+#    if not doc:
+#        return []
+#    conv = doc["conversation"]
+#    return [(conv[i], conv[i+1]) for i in range(0, len(conv), 2)]
 
 
 def save_memory(session_id, user_msg, bot_msg):
-    doc = conversationcol.find_one({"session_id": session_id})
-    if doc:
-        conv = doc["conversation"]
-        conv.extend([user_msg, bot_msg])
-        conversationcol.update_one({"session_id": session_id}, {"$set": {"conversation": conv}})
-    else:
-        conversationcol.insert_one({"session_id": session_id, "conversation": [user_msg, bot_msg]})
+    pass
+#alextest
+#    doc = conversationcol.find_one({"session_id": session_id})
+#    if doc:
+#        conv = doc["conversation"]
+#        conv.extend([user_msg, bot_msg])
+#        conversationcol.update_one({"session_id": session_id}, {"$set": {"conversation": conv}})
+#    else:
+#        conversationcol.insert_one({"session_id": session_id, "conversation": [user_msg, bot_msg]})
 
 
 # -----------------------------
@@ -95,7 +101,7 @@ async def chat(request: ChatRequest):
     # -----------------------------
     # LLM (Groq)
     # -----------------------------
-    llm = ChatGroq(model="llama3-8b-8192")
+    llm = ChatGroq(model="openai/gpt-oss-120b")
 
     # -----------------------------
     # Prompt
@@ -132,7 +138,8 @@ Question:
     # -----------------------------
     # Save memory
     # -----------------------------
-    save_memory(session_id, request.user_input, bot_reply)
+    #alextest
+    #save_memory(session_id, request.user_input, bot_reply)
 
     return {
         "session_id": session_id,
