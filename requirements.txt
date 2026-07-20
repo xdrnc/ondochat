@@ -10,3 +10,4 @@ langchain-groq
 
 faiss-cpu
 sentence-transformers
+python-multipart
