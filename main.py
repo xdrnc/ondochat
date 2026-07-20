@@ -17,6 +17,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough
 
+embeddings = None
 
 app = FastAPI()
 
@@ -106,9 +107,16 @@ async def chat(request: ChatRequest):
     # -----------------------------
     # Embeddings
     # -----------------------------
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
+#    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 #alextest    HuggingFaceEmbeddings(model_name="nomic-ai/nomic-embed-text-v1")
+        # -----------------------------
+    # Lazy-load embeddings
+    # -----------------------------
+    global embeddings
+    if embeddings is None:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
     
     # -----------------------------
     # Vector store
