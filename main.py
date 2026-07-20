@@ -106,8 +106,10 @@ async def chat(request: ChatRequest):
     # -----------------------------
     # Embeddings
     # -----------------------------
-    embeddings = HuggingFaceEmbeddings(model_name="nomic-ai/nomic-embed-text-v1")
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
+#alextest    HuggingFaceEmbeddings(model_name="nomic-ai/nomic-embed-text-v1")
+    
     # -----------------------------
     # Vector store
     # -----------------------------
