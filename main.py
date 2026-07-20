@@ -8,9 +8,9 @@ import uuid
 import pymongo
 
 # ---------------------------------------------------------
-# GLOBAL STATE (per-session data)
+# GLOBAL STATE (per-user data)
 # ---------------------------------------------------------
-session_data = {}  # { session_id: { "file_path", "embeddings", "vectorstore", "retriever" } }
+user_data = {}  # { user_id: { "file_path", "embeddings", "vectorstore", "retriever" } }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DS_ROOT = os.path.join(BASE_DIR, "ds")
@@ -30,76 +30,86 @@ conversationcol = db["history"]
 # ---------------------------------------------------------
 # Conversation Memory
 # ---------------------------------------------------------
-def load_memory(session_id):
-    doc = conversationcol.find_one({"session_id": session_id})
+def load_memory(user_id):
+    doc = conversationcol.find_one({"user_id": user_id})
     if not doc:
         return []
     conv = doc["conversation"]
     return [(conv[i], conv[i+1]) for i in range(0, len(conv), 2)]
 
 
-def save_memory(session_id, user_msg, bot_msg):
-    doc = conversationcol.find_one({"session_id": session_id})
+def save_memory(user_id, user_msg, bot_msg):
+    doc = conversationcol.find_one({"user_id": user_id})
     if doc:
         conv = doc["conversation"]
         conv.extend([user_msg, bot_msg])
-        conversationcol.update_one({"session_id": session_id}, {"$set": {"conversation": conv}})
+        conversationcol.update_one({"user_id": user_id}, {"$set": {"conversation": conv}})
     else:
-        conversationcol.insert_one({"session_id": session_id, "conversation": [user_msg, bot_msg]})
+        conversationcol.insert_one({"user_id": user_id, "conversation": [user_msg, bot_msg]})
 
 
 # ---------------------------------------------------------
 # Request Models
 # ---------------------------------------------------------
 class ChatRequest(BaseModel):
-    session_id: str | None = None
+    user_id: str
     user_input: str
 
 
-class UploadRequest(BaseModel):
-    session_id: str | None = None
+class LoginRequest(BaseModel):
+    user_id: str | None = None
 
 
 # ---------------------------------------------------------
-# Helper: ensure session folder
+# Helper: ensure user folder
 # ---------------------------------------------------------
-def get_session_folder(session_id: str) -> str:
-    folder = os.path.join(DS_ROOT, session_id)
+def get_user_folder(user_id: str) -> str:
+    folder = os.path.join(DS_ROOT, user_id)
     os.makedirs(folder, exist_ok=True)
     return folder
 
 
 # ---------------------------------------------------------
-# UPLOAD ENDPOINT (per-session)
+# LOGIN ENDPOINT
+# ---------------------------------------------------------
+@app.post("/login")
+def login(req: LoginRequest):
+    user_id = req.user_id or str(uuid.uuid4())
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    return {"user_id": user_id}
+
+
+# ---------------------------------------------------------
+# UPLOAD ENDPOINT (per-user)
 # ---------------------------------------------------------
 @app.post("/upload")
-async def upload(file: UploadFile = File(...), session_id: str | None = None):
-    if session_id is None:
-        session_id = str(uuid.uuid4())
+async def upload(file: UploadFile = File(...), user_id: str = ""):
+    if not user_id:
+        return {"status": "error", "message": "user_id is required. Call /login first."}
 
-    folder = get_session_folder(session_id)
+    folder = get_user_folder(user_id)
     file_location = os.path.join(folder, file.filename)
 
     with open(file_location, "wb") as f:
         f.write(await file.read())
 
-    # Store file path in session_data
-    if session_id not in session_data:
-        session_data[session_id] = {}
-    session_data[session_id]["file_path"] = file_location
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    user_data[user_id]["file_path"] = file_location
 
-    return {"session_id": session_id, "file_path": file_location}
+    return {"user_id": user_id, "file_path": file_location}
 
 
 # ---------------------------------------------------------
-# INIT ENDPOINT (per-session heavy work)
+# INIT ENDPOINT (per-user heavy work)
 # ---------------------------------------------------------
 @app.get("/init")
-def init(session_id: str):
-    if session_id not in session_data or "file_path" not in session_data[session_id]:
-        return {"status": "error", "message": "No file uploaded for this session."}
+def init(user_id: str):
+    if user_id not in user_data or "file_path" not in user_data[user_id]:
+        return {"status": "error", "message": "No file uploaded for this user."}
 
-    file_path = session_data[session_id]["file_path"]
+    file_path = user_data[user_id]["file_path"]
 
     # Heavy imports INSIDE endpoint (Render-safe)
     from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
@@ -107,41 +117,35 @@ def init(session_id: str):
     from langchain_community.embeddings import HuggingFaceEmbeddings
     from langchain_community.vectorstores import FAISS
 
-    # Load document
     loader = PyPDFLoader(file_path) if file_path.endswith(".pdf") else Docx2txtLoader(file_path)
     docs = loader.load()
 
-    # Split
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
     chunks = splitter.split_documents(docs)
 
-    # Embeddings (per session)
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
-    # FAISS (per session)
     vectorstore = FAISS.from_documents(chunks, embeddings)
     retriever = vectorstore.as_retriever()
 
-    session_data[session_id]["embeddings"] = embeddings
-    session_data[session_id]["vectorstore"] = vectorstore
-    session_data[session_id]["retriever"] = retriever
+    user_data[user_id]["embeddings"] = embeddings
+    user_data[user_id]["vectorstore"] = vectorstore
+    user_data[user_id]["retriever"] = retriever
 
-    return {"status": "ok", "message": f"Session {session_id} initialized using {file_path}"}
+    return {"status": "ok", "message": f"User {user_id} initialized using {file_path}"}
 
 
 # ---------------------------------------------------------
-# CHAT ENDPOINT (per-session, lightweight)
+# CHAT ENDPOINT (per-user, lightweight)
 # ---------------------------------------------------------
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    session_id = request.session_id or str(uuid.uuid4())
+    user_id = request.user_id
 
-    if session_id not in session_data or "retriever" not in session_data[session_id]:
-        return {"session_id": session_id, "response": "Session not initialized. Upload a file and call /init first."}
+    if user_id not in user_data or "retriever" not in user_data[user_id]:
+        return {"user_id": user_id, "response": "User not initialized. Upload a file and call /init first."}
 
-    retriever = session_data[session_id]["retriever"]
+    retriever = user_data[user_id]["retriever"]
 
-    # Light imports only
     from langchain_groq import ChatGroq
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_core.runnables import RunnableParallel, RunnablePassthrough
@@ -171,18 +175,17 @@ Question:
     result = rag_chain.invoke(request.user_input)
     bot_reply = result.content
 
-    save_memory(session_id, request.user_input, bot_reply)
+    save_memory(user_id, request.user_input, bot_reply)
 
-    return {"session_id": session_id, "response": bot_reply}
+    return {"user_id": user_id, "response": bot_reply}
 
 
 # ---------------------------------------------------------
-# CLEANUP ENDPOINT (optional: delete session data)
+# CLEANUP ENDPOINT (per-user)
 # ---------------------------------------------------------
 @app.delete("/cleanup")
-def cleanup(session_id: str):
-    # Remove session folder
-    folder = os.path.join(DS_ROOT, session_id)
+def cleanup(user_id: str):
+    folder = os.path.join(DS_ROOT, user_id)
     if os.path.exists(folder):
         for f in os.listdir(folder):
             try:
@@ -194,14 +197,12 @@ def cleanup(session_id: str):
         except Exception:
             pass
 
-    # Remove in-memory session data
-    if session_id in session_data:
-        del session_data[session_id]
+    if user_id in user_data:
+        del user_data[user_id]
 
-    # Remove conversation from MongoDB
-    conversationcol.delete_one({"session_id": session_id})
+    conversationcol.delete_one({"user_id": user_id})
 
-    return {"status": "ok", "message": f"Session {session_id} cleaned up"}
+    return {"status": "ok", "message": f"User {user_id} cleaned up"}
 
 
 # ---------------------------------------------------------
