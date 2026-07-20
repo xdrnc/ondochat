@@ -53,22 +53,41 @@ ds/<user_id>/<filename>
 
 ---
 
-### 3️⃣ Initialize the RAG system
-Build embeddings + FAISS index for this user.
+## 🔄 Checking Initialization Status
 
+After uploading a document, OnDoChat begins a multi‑stage background initialization process.  
+Because this work happens asynchronously, the client should **poll the `/init` endpoint** to check the current status.
+
+### **Endpoint**
 ```
 GET /init?user_id=<your_user_id>
 ```
 
-This loads:
+### **Example Response**
+```json
+{
+  "user_id": "alexgc",
+  "stage": "building_faiss"
+}
+```
 
-- The uploaded document  
-- Splits it  
-- Embeds it  
-- Builds FAISS  
-- Stores retriever in memory  
+### **Possible Stages**
+- `idle` — no file uploaded yet  
+- `loading_file` — reading the uploaded document  
+- `splitting_chunks` — breaking the document into chunks  
+- `building_embeddings` — generating vector embeddings  
+- `building_faiss` — constructing the FAISS index  
+- `ready` — initialization complete  
+- `error` — something went wrong (see `error` field)
 
-After this step, the user is ready to chat.
+### **When can you start chatting?**
+You can call `/chat` **only when**:
+```
+"stage": "ready"
+```
+
+Before that, `/chat` will return a message indicating the system is still initializing.
+
 
 ---
 
