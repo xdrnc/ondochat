@@ -1,68 +1,44 @@
 import os
-from dotenv import load_dotenv
-load_dotenv()
-
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
-from pydantic import BaseModel
 import uuid
-import pymongo
+import shutil
+from typing import Optional, List
+
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+# LangChain imports
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.llms import HuggingFaceHub
+from langchain.chains import RetrievalQA
+
+import pickle
 
 # ---------------------------------------------------------
-# GLOBAL STATE (per-user data)
+# Basic setup
 # ---------------------------------------------------------
-user_data = {}  # { user_id: { "file_path", "init_stage", "init_error", "chunks_path", "vectorstore", "retriever", "next_stage" } }
+
+app = FastAPI(title="OnDoChat Simplified Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # adjust for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DS_ROOT = os.path.join(BASE_DIR, "ds")
 os.makedirs(DS_ROOT, exist_ok=True)
 
-app = FastAPI()
-
-# ---------------------------------------------------------
-# MongoDB Setup
-# ---------------------------------------------------------
-MONGO_URL = os.getenv("MONGO_URL")
-client = pymongo.MongoClient(MONGO_URL, serverSelectionTimeoutMS=2000)
-db = client["OnDoChat"]
-conversationcol = db["history"]
+# In-memory user state
+user_data = {}
 
 
-# ---------------------------------------------------------
-# Conversation Memory
-# ---------------------------------------------------------
-def load_memory(user_id):
-    doc = conversationcol.find_one({"user_id": user_id})
-    if not doc:
-        return []
-    conv = doc["conversation"]
-    return [(conv[i], conv[i+1]) for i in range(0, len(conv), 2)]
-
-
-def save_memory(user_id, user_msg, bot_msg):
-    doc = conversationcol.find_one({"user_id": user_id})
-    if doc:
-        conv = doc["conversation"]
-        conv.extend([user_msg, bot_msg])
-        conversationcol.update_one({"user_id": user_id}, {"$set": {"conversation": conv}})
-    else:
-        conversationcol.insert_one({"user_id": user_id, "conversation": [user_msg, bot_msg]})
-
-
-# ---------------------------------------------------------
-# Request Models
-# ---------------------------------------------------------
-class ChatRequest(BaseModel):
-    user_id: str
-    user_input: str
-
-
-class LoginRequest(BaseModel):
-    user_id: str | None = None
-
-
-# ---------------------------------------------------------
-# Helper: ensure user folder
-# ---------------------------------------------------------
 def get_user_folder(user_id: str) -> str:
     folder = os.path.join(DS_ROOT, user_id)
     os.makedirs(folder, exist_ok=True)
@@ -70,326 +46,235 @@ def get_user_folder(user_id: str) -> str:
 
 
 # ---------------------------------------------------------
-# LOGIN ENDPOINT
+# Models
 # ---------------------------------------------------------
+
+class LoginRequest(BaseModel):
+    user_id: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    user_id: str
+    question: str
+
+
+# ---------------------------------------------------------
+# /login
+# ---------------------------------------------------------
+
 @app.post("/login")
 def login(req: LoginRequest):
     user_id = req.user_id or str(uuid.uuid4())
+
+    # Initialize user state
+    user_data[user_id] = {
+        "file_path": None,
+        "chunks_path": None,
+        "vectorstore": None,
+        "retriever": None,
+        "init_stage": "idle",
+        "init_error": None,
+    }
+
+    return {"user_id": user_id, "stage": "idle"}
+
+
+# ---------------------------------------------------------
+# /upload
+# ---------------------------------------------------------
+
+@app.post("/upload")
+def upload_file(user_id: str = Form(...), file: UploadFile = File(...)):
     if user_id not in user_data:
-        user_data[user_id] = {
-            "file_path": None,
-            "init_stage": "idle",
-            "init_error": None,
-            "chunks_path": None,
-            "vectorstore": None,
-            "retriever": None,
-            "next_stage": None,
-        }
+        return {"status": "error", "message": "Unknown user_id."}
 
-    # Try restoring previous state
-    restore_user_state(user_id)
-
-    return {"user_id": user_id}
-
-def restore_user_state(user_id: str):
     folder = get_user_folder(user_id)
-    file_path = None
+
+    # Save uploaded file
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in [".pdf", ".docx"]:
+        return {"status": "error", "message": "Only .pdf or .docx supported."}
+
+    saved_path = os.path.join(folder, file.filename)
+    with open(saved_path, "wb") as f:
+        f.write(file.file.read())
+
+    # Reset state related to this file
+    chunks_path = os.path.join(folder, "chunks.pkl")
+    if os.path.exists(chunks_path):
+        os.remove(chunks_path)
+
+    user_data[user_id]["file_path"] = saved_path
+    user_data[user_id]["chunks_path"] = None
+    user_data[user_id]["vectorstore"] = None
+    user_data[user_id]["retriever"] = None
+    user_data[user_id]["init_stage"] = "idle"
+    user_data[user_id]["init_error"] = None
+
+    return {"status": "ok", "user_id": user_id, "file": file.filename}
+
+
+# ---------------------------------------------------------
+# /init (synchronous)
+# ---------------------------------------------------------
+
+@app.get("/init")
+def init(user_id: str):
+    if user_id not in user_data:
+        return {"status": "error", "message": "Unknown user_id."}
+
+    folder = get_user_folder(user_id)
     chunks_path = os.path.join(folder, "chunks.pkl")
 
-    # Find uploaded file
-    for f in os.listdir(folder):
-        if f.lower().endswith((".pdf", ".docx")):
-            file_path = os.path.join(folder, f)
-            break
-
-    # If no file, nothing to restore
+    # 1. Find uploaded file
+    file_path = user_data[user_id].get("file_path")
     if not file_path:
-        return
+        # Try to discover file from folder
+        for f in os.listdir(folder):
+            if f.lower().endswith((".pdf", ".docx")):
+                file_path = os.path.join(folder, f)
+                user_data[user_id]["file_path"] = file_path
+                break
 
-    user_data[user_id]["file_path"] = file_path
+    if not file_path:
+        return {"status": "error", "message": "No uploaded file found."}
 
-    # If chunks DO NOT exist → Stage 1 must run
-    if not os.path.exists(chunks_path):
-        user_data[user_id]["needs_stage_1"] = True
-        user_data[user_id]["init_stage"] = "idle"
-        return
+    # 2. If chunks already exist, rebuild vectorstore
+    if os.path.exists(chunks_path):
+        try:
+            with open(chunks_path, "rb") as f:
+                chunks = pickle.load(f)
 
-    # If chunks exist, rebuild vectorstore
-    import pickle
-    with open(chunks_path, "rb") as f:
-        chunks = pickle.load(f)
+            embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2"
+            )
+            vectorstore = FAISS.from_documents(chunks, embeddings)
+            retriever = vectorstore.as_retriever()
 
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import FAISS
+            user_data[user_id]["vectorstore"] = vectorstore
+            user_data[user_id]["retriever"] = retriever
+            user_data[user_id]["chunks_path"] = chunks_path
+            user_data[user_id]["init_stage"] = "ready"
+            user_data[user_id]["init_error"] = None
 
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectorstore = FAISS.from_documents(chunks, embeddings)
-    retriever = vectorstore.as_retriever()
+            return {"user_id": user_id, "stage": "ready"}
 
-    user_data[user_id]["vectorstore"] = vectorstore
-    user_data[user_id]["retriever"] = retriever
-    user_data[user_id]["init_stage"] = "ready"
+        except Exception as e:
+            user_data[user_id]["init_stage"] = "error"
+            user_data[user_id]["init_error"] = str(e)
+            return {
+                "status": "error",
+                "message": f"Failed to rebuild vectorstore: {e}",
+            }
 
-
-# ---------------------------------------------------------
-# STAGE 1: load file + split chunks (marks next_stage for stage 2)
-# ---------------------------------------------------------
-def background_stage_1(user_id: str):
+    # 3. Split PDF into chunks
     try:
-        if user_id not in user_data or not user_data[user_id].get("file_path"):
-            user_data[user_id]["init_stage"] = "error"
-            user_data[user_id]["init_error"] = "No file uploaded for this user."
-            return
-
-        file_path = user_data[user_id]["file_path"]
-        if not os.path.exists(file_path):
-            user_data[user_id]["init_stage"] = "error"
-            user_data[user_id]["init_error"] = "File not found on server."
-            return
-
-        # Stage 1: loading_file
-        user_data[user_id]["init_stage"] = "loading_file"
-        from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
-
-        if file_path.lower().endswith(".pdf"):
-            loader = PyPDFLoader(file_path)
-        else:
-            loader = Docx2txtLoader(file_path)
-
+        loader = PyPDFLoader(file_path)
         docs = loader.load()
 
-        # Stage 2: splitting_chunks
-        user_data[user_id]["init_stage"] = "splitting_chunks"
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+        )
         chunks = splitter.split_documents(docs)
 
-        # Persist chunks to disk to reduce memory footprint
-        folder = get_user_folder(user_id)
-        chunks_path = os.path.join(folder, "chunks.pkl")
-
-        import pickle
         with open(chunks_path, "wb") as f:
             pickle.dump(chunks, f)
 
         user_data[user_id]["chunks_path"] = chunks_path
 
-        # Free docs from memory
-        user_data[user_id]["docs"] = None
-        del docs
-
-        # Mark that stage 2 should run next (Render-safe: no raw threads)
-        user_data[user_id]["next_stage"] = "stage_2"
-
     except Exception as e:
         user_data[user_id]["init_stage"] = "error"
         user_data[user_id]["init_error"] = str(e)
+        return {"status": "error", "message": f"Failed to split PDF: {e}"}
 
-
-# ---------------------------------------------------------
-# STAGE 2: build embeddings + FAISS + retriever
-# ---------------------------------------------------------
-def background_stage_2(user_id: str):
+    # 4. Build embeddings + FAISS
     try:
-        if user_id not in user_data or not user_data[user_id].get("chunks_path"):
-            user_data[user_id]["init_stage"] = "error"
-            user_data[user_id]["init_error"] = "Chunks not available for this user."
-            return
-
-        chunks_path = user_data[user_id]["chunks_path"]
-        if not os.path.exists(chunks_path):
-            user_data[user_id]["init_stage"] = "error"
-            user_data[user_id]["init_error"] = "Chunks file not found on server."
-            return
-
-        import pickle
-        with open(chunks_path, "rb") as f:
-            chunks = pickle.load(f)
-
-        # Stage 3: building_embeddings
-        user_data[user_id]["init_stage"] = "building_embeddings"
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        user_data[user_id]["embeddings"] = embeddings
-
-        # Stage 4: building_faiss
-        user_data[user_id]["init_stage"] = "building_faiss"
-        from langchain_community.vectorstores import FAISS
-
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
         vectorstore = FAISS.from_documents(chunks, embeddings)
         retriever = vectorstore.as_retriever()
 
         user_data[user_id]["vectorstore"] = vectorstore
         user_data[user_id]["retriever"] = retriever
-
-        # Free chunks and embeddings from memory if you want to be extra cautious
-        user_data[user_id]["embeddings"] = None
-        del chunks
-
-        # Stage 5: ready
         user_data[user_id]["init_stage"] = "ready"
         user_data[user_id]["init_error"] = None
+
+        return {"user_id": user_id, "stage": "ready"}
 
     except Exception as e:
         user_data[user_id]["init_stage"] = "error"
         user_data[user_id]["init_error"] = str(e)
+        return {
+            "status": "error",
+            "message": f"Failed to build embeddings/FAISS: {e}",
+        }
 
 
 # ---------------------------------------------------------
-# UPLOAD ENDPOINT (starts stage 1)
+# /chat
 # ---------------------------------------------------------
-@app.post("/upload")
-async def upload(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    user_id: str = "",
-):
-    if not user_id:
-        return {"status": "error", "message": "user_id is required. Call /login first."}
 
-    if user_id not in user_data:
-        return {"status": "error", "message": "Unknown user_id. Call /login first."}
+@app.post("/chat")
+def chat(req: ChatRequest):
+    user_id = req.user_id
+    question = req.question
 
-    folder = get_user_folder(user_id)
-    file_location = os.path.join(folder, file.filename)
-
-    with open(file_location, "wb") as f:
-        f.write(await file.read())
-
-    user_data[user_id]["file_path"] = file_location
-    user_data[user_id]["init_stage"] = "loading_file"
-    user_data[user_id]["init_error"] = None
-    user_data[user_id]["next_stage"] = None
-
-    # Start Stage 1; Stage 2 will be triggered via /init polling
-    background_tasks.add_task(background_stage_1, user_id)
-
-    return {
-        "status": "ok",
-        "user_id": user_id,
-        "file_path": file_location,
-        "message": "File uploaded. Initialization started in background.",
-    }
-
-
-# ---------------------------------------------------------
-# INIT ENDPOINT (detailed progress + Render-safe stage chaining)
-# ---------------------------------------------------------
-@app.get("/init")
-def init(user_id: str, background_tasks: BackgroundTasks):
     if user_id not in user_data:
         return {"status": "error", "message": "Unknown user_id."}
-
-    stage = user_data[user_id].get("init_stage", "idle")
-    error = user_data[user_id].get("init_error")
-
-    # ---------------------------------------------------------
-    # 1. If Stage 1 is needed (file exists but chunks.pkl missing)
-    # ---------------------------------------------------------
-    if user_data[user_id].get("needs_stage_1"):
-        user_data[user_id]["needs_stage_1"] = False
-        user_data[user_id]["init_stage"] = "loading_file"
-        background_tasks.add_task(background_stage_1, user_id)
-
-        return {"user_id": user_id, "stage": "loading_file"}
-
-    # Render-safe chaining: if Stage 1 finished and next_stage is stage_2, start Stage 2 here
-    if user_data[user_id].get("next_stage") == "stage_2" and stage == "splitting_chunks":
-        # Clear the flag to avoid duplicate scheduling
-        user_data[user_id]["next_stage"] = None
-        # Schedule Stage 2 as a FastAPI background task (Render-safe)
-        background_tasks.add_task(background_stage_2, user_id)
-
-    response = {"user_id": user_id, "stage": user_data[user_id].get("init_stage", "idle")}
-
-    if response["stage"] == "error" and error:
-        response["error"] = error
-
-    return response
-
-
-# ---------------------------------------------------------
-# CHAT ENDPOINT (per-user, uses retriever)
-# ---------------------------------------------------------
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    user_id = request.user_id
-
-    if user_id not in user_data:
-        return {"user_id": user_id, "response": "Unknown user_id. Please login first."}
-
-    if user_data[user_id].get("init_stage") != "ready":
-        return {
-            "user_id": user_id,
-            "response": f"Initialization not ready. Current stage: {user_data[user_id].get('init_stage')}",
-        }
 
     retriever = user_data[user_id].get("retriever")
     if retriever is None:
         return {
-            "user_id": user_id,
-            "response": "Retriever not available. Initialization may have failed.",
+            "status": "error",
+            "message": "Retriever not ready. Call /init first.",
         }
 
-    from langchain_groq import ChatGroq
-    from langchain_core.prompts import ChatPromptTemplate
-    from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+    # Simple QA chain
+    try:
+        llm = HuggingFaceHub(
+            repo_id="google/gemma-2-2b-it",
+            model_kwargs={"temperature": 0.2, "max_new_tokens": 512},
+        )
 
-    llm = ChatGroq(model="openai/gpt-oss-120b")
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            retriever=retriever,
+            return_source_documents=True,
+        )
 
-    prompt = ChatPromptTemplate.from_template("""
-Use the following context to answer the question.
-If the answer is not in the context, say "I don't know".
+        result = qa({"query": question})
+        answer = result["result"]
+        sources: List[str] = [
+            doc.metadata.get("source", "") for doc in result["source_documents"]
+        ]
 
-Context:
-{context}
+        return {
+            "status": "ok",
+            "answer": answer,
+            "sources": sources,
+        }
 
-Question:
-{question}
-""")
-
-    rag_chain = (
-        RunnableParallel({
-            "context": retriever,
-            "question": RunnablePassthrough()
-        })
-        | prompt
-        | llm
-    )
-
-    result = rag_chain.invoke(request.user_input)
-    bot_reply = result.content
-
-    save_memory(user_id, request.user_input, bot_reply)
-
-    return {"user_id": user_id, "response": bot_reply}
+    except Exception as e:
+        return {"status": "error", "message": f"Chat failed: {e}"}
 
 
 # ---------------------------------------------------------
-# CLEANUP ENDPOINT (per-user)
+# /cleanup
 # ---------------------------------------------------------
+
 @app.delete("/cleanup")
 def cleanup(user_id: str):
     folder = os.path.join(DS_ROOT, user_id)
+
     if os.path.exists(folder):
-        for f in os.listdir(folder):
-            try:
-                os.remove(os.path.join(folder, f))
-            except Exception:
-                pass
-        try:
-            os.rmdir(folder)
-        except Exception:
-            pass
+        shutil.rmtree(folder)
 
     if user_id in user_data:
         del user_data[user_id]
 
-    conversationcol.delete_one({"user_id": user_id})
-
-    return {"status": "ok", "message": f"User {user_id} cleaned up"}
+    return {"status": "ok", "message": f"Cleaned up user {user_id}."}
 
 
 # ---------------------------------------------------------

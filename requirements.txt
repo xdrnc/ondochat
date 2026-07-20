@@ -1,10 +1,7 @@
 fastapi
 uvicorn
 python-multipart
-pymongo
 langchain
 langchain-community
-langchain-text-splitters
-langchain-groq
-sentence-transformers
-python-dotenv
+huggingface_hub
+pydantic
