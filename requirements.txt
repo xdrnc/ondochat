@@ -1,13 +1,10 @@
 fastapi
 uvicorn
-python-dotenv
+python-multipart
 pymongo
-
-langchain-core
+langchain
 langchain-community
 langchain-text-splitters
 langchain-groq
-
-faiss-cpu
 sentence-transformers
-python-multipart
+python-dotenv
