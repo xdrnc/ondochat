@@ -6,11 +6,11 @@ from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel
 import uuid
 import pymongo
-import threading
+
 # ---------------------------------------------------------
 # GLOBAL STATE (per-user data)
 # ---------------------------------------------------------
-user_data = {}  # { user_id: { "file_path", "embeddings", "vectorstore", "retriever" } }
+user_data = {}  # { user_id: { "file_path", "init_stage", "init_error", "chunks_path", "vectorstore", "retriever", "next_stage" } }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DS_ROOT = os.path.join(BASE_DIR, "ds")
@@ -76,12 +76,63 @@ def get_user_folder(user_id: str) -> str:
 def login(req: LoginRequest):
     user_id = req.user_id or str(uuid.uuid4())
     if user_id not in user_data:
-        user_data[user_id] = {}
+        user_data[user_id] = {
+            "file_path": None,
+            "init_stage": "idle",
+            "init_error": None,
+            "chunks_path": None,
+            "vectorstore": None,
+            "retriever": None,
+            "next_stage": None,
+        }
+
+    # Try restoring previous state
+    restore_user_state(user_id)
+
     return {"user_id": user_id}
+
+def restore_user_state(user_id: str):
+    folder = get_user_folder(user_id)
+    file_path = None
+    chunks_path = os.path.join(folder, "chunks.pkl")
+
+    # Find uploaded file
+    for f in os.listdir(folder):
+        if f.lower().endswith((".pdf", ".docx")):
+            file_path = os.path.join(folder, f)
+            break
+
+    # If no file, nothing to restore
+    if not file_path:
+        return
+
+    user_data[user_id]["file_path"] = file_path
+
+    # If chunks DO NOT exist → Stage 1 must run
+    if not os.path.exists(chunks_path):
+        user_data[user_id]["needs_stage_1"] = True
+        user_data[user_id]["init_stage"] = "idle"
+        return
+
+    # If chunks exist, rebuild vectorstore
+    import pickle
+    with open(chunks_path, "rb") as f:
+        chunks = pickle.load(f)
+
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.vectorstores import FAISS
+
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    vectorstore = FAISS.from_documents(chunks, embeddings)
+    retriever = vectorstore.as_retriever()
+
+    user_data[user_id]["vectorstore"] = vectorstore
+    user_data[user_id]["retriever"] = retriever
+    user_data[user_id]["init_stage"] = "ready"
 
 
 # ---------------------------------------------------------
-# STAGE 1: load file + split chunks (automatic chain to stage 2)
+# STAGE 1: load file + split chunks (marks next_stage for stage 2)
 # ---------------------------------------------------------
 def background_stage_1(user_id: str):
     try:
@@ -128,8 +179,8 @@ def background_stage_1(user_id: str):
         user_data[user_id]["docs"] = None
         del docs
 
-        # Automatically chain to stage 2
-        threading.Thread(target=background_stage_2, args=(user_id,)).start()
+        # Mark that stage 2 should run next (Render-safe: no raw threads)
+        user_data[user_id]["next_stage"] = "stage_2"
 
     except Exception as e:
         user_data[user_id]["init_stage"] = "error"
@@ -187,7 +238,7 @@ def background_stage_2(user_id: str):
 
 
 # ---------------------------------------------------------
-# UPLOAD ENDPOINT (starts stage 1, which chains to stage 2)
+# UPLOAD ENDPOINT (starts stage 1)
 # ---------------------------------------------------------
 @app.post("/upload")
 async def upload(
@@ -210,8 +261,9 @@ async def upload(
     user_data[user_id]["file_path"] = file_location
     user_data[user_id]["init_stage"] = "loading_file"
     user_data[user_id]["init_error"] = None
+    user_data[user_id]["next_stage"] = None
 
-    # Start Stage 1; Stage 1 will automatically chain to Stage 2
+    # Start Stage 1; Stage 2 will be triggered via /init polling
     background_tasks.add_task(background_stage_1, user_id)
 
     return {
@@ -223,23 +275,39 @@ async def upload(
 
 
 # ---------------------------------------------------------
-# INIT ENDPOINT (detailed progress)
+# INIT ENDPOINT (detailed progress + Render-safe stage chaining)
 # ---------------------------------------------------------
 @app.get("/init")
-def init(user_id: str):
+def init(user_id: str, background_tasks: BackgroundTasks):
     if user_id not in user_data:
         return {"status": "error", "message": "Unknown user_id."}
 
     stage = user_data[user_id].get("init_stage", "idle")
     error = user_data[user_id].get("init_error")
 
-    response = {"user_id": user_id, "stage": stage}
+    # ---------------------------------------------------------
+    # 1. If Stage 1 is needed (file exists but chunks.pkl missing)
+    # ---------------------------------------------------------
+    if user_data[user_id].get("needs_stage_1"):
+        user_data[user_id]["needs_stage_1"] = False
+        user_data[user_id]["init_stage"] = "loading_file"
+        background_tasks.add_task(background_stage_1, user_id)
 
-    if stage == "error" and error:
+        return {"user_id": user_id, "stage": "loading_file"}
+
+    # Render-safe chaining: if Stage 1 finished and next_stage is stage_2, start Stage 2 here
+    if user_data[user_id].get("next_stage") == "stage_2" and stage == "splitting_chunks":
+        # Clear the flag to avoid duplicate scheduling
+        user_data[user_id]["next_stage"] = None
+        # Schedule Stage 2 as a FastAPI background task (Render-safe)
+        background_tasks.add_task(background_stage_2, user_id)
+
+    response = {"user_id": user_id, "stage": user_data[user_id].get("init_stage", "idle")}
+
+    if response["stage"] == "error" and error:
         response["error"] = error
 
     return response
-
 
 
 # ---------------------------------------------------------
