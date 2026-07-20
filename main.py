@@ -53,7 +53,7 @@ def save_memory(session_id, user_msg, bot_msg):
 class ChatRequest(BaseModel):
     session_id: str | None = None
     user_input: str
-    data_source: str  # path to PDF or DOCX inside Codespaces
+    data_source: str | None = None  # path to PDF or DOCX inside Codespaces
 
 
 # -----------------------------
@@ -66,14 +66,36 @@ async def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
 
     # -----------------------------
-    # Load document
+    # Validate data_source
     # -----------------------------
-    if request.data_source.endswith(".pdf"):
-        loader = PyPDFLoader(request.data_source)
-    else:
-        loader = Docx2txtLoader(request.data_source)
+    if not request.data_source:
+        return {
+            "session_id": session_id,
+            "response": "No data_source provided. Please upload a PDF or DOCX first."
+        }
 
-    docs = loader.load()
+    if not os.path.exists(request.data_source):
+        return {
+            "session_id": session_id,
+            "response": f"File not found: {request.data_source}"
+        }
+
+    # -----------------------------
+    # Load document safely
+    # -----------------------------
+    try:
+        if request.data_source.endswith(".pdf"):
+            loader = PyPDFLoader(request.data_source)
+        else:
+            loader = Docx2txtLoader(request.data_source)
+
+        docs = loader.load()
+
+    except Exception as e:
+        return {
+            "session_id": session_id,
+            "response": f"Error loading file: {str(e)}"
+        }
 
     # -----------------------------
     # Split text
