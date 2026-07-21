@@ -123,20 +123,23 @@ Verifies connectivity with the configured MongoDB cluster.
 
 ## 🏗️ Architecture Overview
 
-[ User Upload ] ──► Stores PDF locally ──► Returns Quick ACK
-                                                │
-[ User Query  ] ──► Checks Vector Store ────────┤
-                          │ (If missing)        │
-                          ▼                     ▼
-                  [ Split & Embed ] ◄── Load Saved PDF
-                          │
-                          ▼
-                 [ FAISS Retriever ]
-                          │
-                          ▼
-             [ Context + Query Prompt ]
-                          │
-                          ▼
-                  [ Groq LLM API ] ──► Returns Answer
+```mermaid
+flowchart TD
+    subgraph Upload ["1. Upload Flow (/upload)"]
+        A[User Uploads PDF] --> B[Save PDF to User Folder]
+        B --> C[Return Quick ACK]
+    end
+
+    subgraph Chat ["2. Chat Flow (/chat - Lazy RAG)"]
+        D[User Question] --> E{Vector Store Exists?}
+        E -- No --> F[Load PDF with PDFPlumber]
+        F --> G[Split Chunks & Embed with HuggingFace]
+        G --> H[Initialize FAISS Store & Retriever]
+        E -- Yes --> H
+        H --> I[Retrieve Relevant Context Chunks]
+        I --> J[Construct Grounded Prompt]
+        J --> K[Query Groq API]
+        K --> L[Return Answer + Source Metadata]
+    end
 
 ---
