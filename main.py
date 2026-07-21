@@ -16,6 +16,9 @@ from langchain_community.vectorstores import FAISS
 from groq import Groq
 from langchain_classic.chains import RetrievalQA
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from pymongo import MongoClient
 
 MONGO_URL = os.getenv("MONGO_URL")

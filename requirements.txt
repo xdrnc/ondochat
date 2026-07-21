@@ -15,3 +15,5 @@ huggingface-hub
 pymongo
 python-multipart
 groq
+
+python-dotenv
