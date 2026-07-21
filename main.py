@@ -203,7 +203,7 @@ Question:
 
 
 # ---------------------------------------------------------
-# Optional Mongo endpoints
+# Mongo endpoints
 # ---------------------------------------------------------
 
 @app.get("/mongo-test")
@@ -213,3 +213,30 @@ def mongo_test():
         return {"status": "ok", "message": "MongoDB connection successful"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.post("/save")
+def save_chat(user_id: str):
+    db = mongo_client["ondochat"]
+    history_col = db["history"]
+
+    if user_id not in user_chats or len(user_chats[user_id]) == 0:
+        return {"status": "error", "message": "No chat history to save."}
+
+    history_col.insert_one({
+        "user_id": user_id,
+        "conversation": user_chats[user_id]
+    })
+
+    return {"status": "ok", "message": "Chat history saved."}
+
+@app.get("/history")
+def get_history(user_id: str):
+    db = mongo_client["ondochat"]
+    history_col = db["history"]
+
+    docs = list(history_col.find({"user_id": user_id}, {"_id": 0}))
+
+    if not docs:
+        return {"status": "ok", "history": []}
+
+    return {"status": "ok", "history": docs}
