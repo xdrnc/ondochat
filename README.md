@@ -3,176 +3,141 @@
 
 https://ondochat.onrender.com/docs (not currently working due to memory issue)
 
-## 🔧 Overview
-OnDoChat is a multi‑user Retrieval‑Augmented Generation (RAG) backend built with FastAPI.  
-It supports:
+# 🚀 OnDoChat Backend
 
-- Per‑user login  
-- Per‑user document upload  
-- Per‑user FAISS vector indexing  
-- Per‑user chat history  
-- Per‑user cleanup  
-- Portable filesystem (Render/GCR‑safe)  
-- Lazy heavy imports (fast startup)
+A lightweight, high-performance RAG (Retrieval-Augmented Generation) API built with **FastAPI**, **LangChain**, **FAISS**, and **Groq**. 
 
-This architecture ensures **no cross‑user contamination**, **scalable multi‑user support**, and **clean isolation** of all RAG components.
+OnDoChat features a **lazy-initialization architecture**—it defers document parsing, embedding generation, and vector indexing until the user actually sends their first chat prompt, optimizing system resources and speeding up initial file uploads.
 
 ---
 
-## 🧩 System Flow
+## ✨ Features
 
-### 1️⃣ Login → Get a `user_id`
-Every user must start by logging in.
-
-```
-POST /login
-```
-
-Response:
-
-```json
-{
-  "user_id": "generated-uuid"
-}
-```
-
-Use this `user_id` for all future requests.
+* **⚡ Fast & Lightweight File Uploads**: Instantly receives PDF files and stores them per user without blocking on heavy processing.
+* **🧠 On-Demand / Lazy-Init RAG**: Document chunking (`PDFPlumberLoader`) and vector store indexing (`FAISS` + `sentence-transformers`) are executed only on the first query.
+* **⚡ Blazing Fast Generation**: Leverages the **Groq API** for ultra-fast LLM responses.
+* **📍 Contextual Grounding**: Restricts responses to provided context with explicit fallback handling ("I don't know") to reduce hallucinations.
+* **📂 Multi-Tenant User Contexts**: Separates document storage and vector retrieval by `user_id`.
+* **🍃 MongoDB Ready**: Includes health-check integrations for state/session management with MongoDB Atlas.
 
 ---
 
-### 2️⃣ Upload a document
-Upload a PDF or DOCX for this user.
+## 🛠️ Tech Stack
 
-```
-POST /upload?user_id=<your_user_id>
-```
-
-Stored under:
-
-```
-ds/<user_id>/<filename>
-```
+* **Framework**: FastAPI
+* **LLM Orchestration**: Groq SDK / LangChain
+* **Vector Store**: FAISS
+* **Embeddings**: `sentence-transformers/all-MiniLM-L6-v2` via HuggingFace
+* **PDF Parser**: `pdfplumber` (LangChain Community Loader)
+* **Database**: MongoDB (PyMongo)
 
 ---
 
-## 🔄 Checking Initialization Status
+## 🚀 Getting Started
 
-After uploading a document, OnDoChat begins a multi‑stage background initialization process.  
-Because this work happens asynchronously, the client should **poll the `/init` endpoint** to check the current status.
+### 1. Prerequisites
 
-### **Endpoint**
-```
-GET /init?user_id=<your_user_id>
-```
+Make sure you have **Python 3.10+** installed along with `pip`.
 
-### **Example Response**
-```json
-{
-  "user_id": "alexgc",
-  "stage": "building_faiss"
-}
-```
+### 2. Environment Setup
 
-### **Possible Stages**
-- `idle` — no file uploaded yet  
-- `loading_file` — reading the uploaded document  
-- `splitting_chunks` — breaking the document into chunks  
-- `building_embeddings` — generating vector embeddings  
-- `building_faiss` — constructing the FAISS index  
-- `ready` — initialization complete  
-- `error` — something went wrong (see `error` field)
+Clone the repository and install the dependencies:
 
-### **When can you start chatting?**
-You can call `/chat` **only when**:
-```
-"stage": "ready"
-```
+```bash
+git clone [https://github.com/xdrnc/ondochat.git](https://github.com/xdrnc/ondochat.git)
+cd ondochat
 
-Before that, `/chat` will return a message indicating the system is still initializing.
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
 
+# Install dependencies from requirements file
+pip install -r requirements.txt
+
+### 3. Environment Variables
+
+Create a `.env` file in the root directory:
+
+    GROQ_API_KEY=your_groq_api_key_here
+    GROQ_MODEL=llama-3.3-70b-versatile  # Or your preferred Groq model
+    MONGO_URL=mongodb+srv://<username>:<password>@cluster.mongodb.net/?retryWrites=true&w=majority
 
 ---
 
-### 4️⃣ Chat with the document
-Ask questions about the uploaded document.
+## 🏃 Running the Application
 
-```
-POST /chat
-{
-  "user_id": "<your_user_id>",
-  "user_input": "Your question here"
-}
-```
+Start the development server using `uvicorn`:
 
-The system retrieves relevant chunks and answers using Groq LLM.
+    uvicorn main:app --reload
+
+The server will spin up at `[http://127.0.0.1:8000](http://127.0.0.1:8000)`. You can test the endpoints interactively via Swagger UI at `[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)`.
 
 ---
 
-### 5️⃣ Cleanup (optional)
-Delete all data for a user.
+## 📡 API Endpoints
 
-```
-DELETE /cleanup?user_id=<your_user_id>
-```
+### 1. Upload Document
+Uploads a PDF file for a specific user.
 
-This removes:
+* **Endpoint**: `POST /upload`
+* **Content-Type**: `multipart/form-data`
+* **Body Parameters**:
+  * `user_id`: String
+  * `file`: File (PDF format)
 
-- User folder  
-- FAISS index  
-- Embeddings  
-- MongoDB conversation history  
-- In‑memory retriever  
+**Example Request (`curl`):**
 
----
-
-## 📁 Folder Structure
-
-```
-ds/
- ├── <user_id_1>/
- │     └── document.pdf
- ├── <user_id_2>/
- │     └── contract.docx
- └── ...
-```
-
-Each user has their own isolated folder.
+    curl -X POST "[http://127.0.0.1:8000/upload](http://127.0.0.1:8000/upload)" \
+      -F "user_id=user123" \
+      -F "file=@/path/to/document.pdf"
 
 ---
 
-## 🚀 Deployment Notes
+### 2. Chat Query
+Queries the uploaded document using RAG. If the document hasn't been embedded yet, the server automatically builds the vector store first.
 
-- No hardcoded paths  
-- Uses `BASE_DIR` for portability  
-- Works on Render, GCR, Railway, Docker  
-- Heavy imports only inside `/init`  
-- Startup is instant (Render‑safe)
+* **Endpoint**: `POST /chat`
+* **Content-Type**: `application/json`
+* **Body**:
 
----
+    {
+      "user_id": "user123",
+      "question": "What are the key takeaways from the document?"
+    }
 
-## 🛠 Requirements
+**Example Response:**
 
-- Python 3.10+
-- FastAPI
-- Uvicorn
-- LangChain
-- Groq API key
-- MongoDB Atlas or local MongoDB
-
----
-
-## ▶️ Run Locally
-
-```
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
+    {
+      "status": "ok",
+      "answer": "The document outlines the Q3 financial goals and highlights...",
+      "sources": [
+        "ds/user123/document.pdf"
+      ]
+    }
 
 ---
 
-## 📌 Notes
+### 3. MongoDB Health Check
+Verifies connectivity with the configured MongoDB cluster.
 
-- Each user is fully isolated  
-- No cross‑user context mixing  
-- FAISS and embeddings are per‑user  
-- Cleanup is optional but recommended for long‑running deployments  
+* **Endpoint**: `GET /mongo-test`
 
+---
+
+## 🏗️ Architecture Overview
+
+[ User Upload ] ──► Stores PDF locally ──► Returns Quick ACK
+                                                │
+[ User Query  ] ──► Checks Vector Store ────────┤
+                          │ (If missing)        │
+                          ▼                     ▼
+                  [ Split & Embed ] ◄── Load Saved PDF
+                          │
+                          ▼
+                 [ FAISS Retriever ]
+                          │
+                          ▼
+             [ Context + Query Prompt ]
+                          │
+                          ▼
+                  [ Groq LLM API ] ──► Returns Answer
