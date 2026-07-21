@@ -3,8 +3,6 @@
 
 https://ondochat.onrender.com/docs (not currently working due to memory issue)
 
-# 🚀 OnDoChat Backend
-
 A lightweight, high-performance RAG (Retrieval-Augmented Generation) API built with **FastAPI**, **LangChain**, **FAISS**, and **Groq**. 
 
 OnDoChat features a **lazy-initialization architecture**—it defers document parsing, embedding generation, and vector indexing until the user actually sends their first chat prompt, optimizing system resources and speeding up initial file uploads.
@@ -41,18 +39,17 @@ Make sure you have **Python 3.10+** installed along with `pip`.
 
 ### 2. Environment Setup
 
-Clone the repository and install the dependencies:
+Clone the repository and install the dependencies from `requirements.txt`:
 
-```bash
-git clone [https://github.com/xdrnc/ondochat.git](https://github.com/xdrnc/ondochat.git)
-cd ondochat
+    git clone [https://github.com/xdrnc/ondochat.git](https://github.com/xdrnc/ondochat.git)
+    cd ondochat
 
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows use: venv\Scripts\activate
+    # Create and activate virtual environment
+    python -m venv venv
+    source venv/bin/activate  # On Windows use: venv\Scripts\activate
 
-# Install dependencies from requirements file
-pip install -r requirements.txt
+    # Install dependencies from requirements file
+    pip install -r requirements.txt
 
 ### 3. Environment Variables
 
@@ -141,3 +138,5 @@ Verifies connectivity with the configured MongoDB cluster.
                           │
                           ▼
                   [ Groq LLM API ] ──► Returns Answer
+
+---
