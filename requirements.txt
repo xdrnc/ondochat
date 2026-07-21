@@ -3,5 +3,6 @@ uvicorn
 python-multipart
 langchain
 langchain-community
+langchain-text-splitters
 huggingface_hub
 pydantic
