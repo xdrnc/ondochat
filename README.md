@@ -141,5 +141,3 @@ flowchart TD
         J --> K[Query Groq API]
         K --> L[Return Answer + Source Metadata]
     end
-
----
