@@ -13,3 +13,4 @@ faiss-cpu
 huggingface-hub
 
 pymongo
+python-multipart
