@@ -7,3 +7,4 @@ langchain-text-splitters
 huggingface_hub
 pydantic
 langchain-classic
+pypdf
