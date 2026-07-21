@@ -12,10 +12,20 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_community.llms import HuggingFaceHub
+#from langchain_community.llms import HuggingFaceHub
+from groq import Groq
 from langchain_classic.chains import RetrievalQA
 
+from pymongo import MongoClient
+
+MONGO_URL = os.getenv("MONGO_URL")
+client = MongoClient(MONGO_URL)
+
+GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/compound-mini")
+
 import pickle
+
+
 
 # ---------------------------------------------------------
 # Basic setup
@@ -231,24 +241,33 @@ def chat(req: ChatRequest):
             "message": "Retriever not ready. Call /init first.",
         }
 
-    # Simple QA chain
     try:
-        llm = HuggingFaceHub(
-            repo_id="google/gemma-2-2b-it",
-            model_kwargs={"temperature": 0.2, "max_new_tokens": 512},
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        docs = retriever.get_relevant_documents(question)
+        context = "\n\n".join([d.page_content for d in docs])
+
+        prompt = f"""
+        You are a helpful assistant. Use the following context to answer the question.
+
+        Context:
+        {context}
+
+        Question:
+        {question}
+
+        Answer:
+        """
+
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=512,
         )
 
-        qa = RetrievalQA.from_chain_type(
-            llm=llm,
-            retriever=retriever,
-            return_source_documents=True,
-        )
-
-        result = qa({"query": question})
-        answer = result["result"]
-        sources: List[str] = [
-            doc.metadata.get("source", "") for doc in result["source_documents"]
-        ]
+        answer = completion.choices[0].message["content"]
+        sources = [doc.metadata.get("source", "") for doc in docs]
 
         return {
             "status": "ok",
