@@ -269,7 +269,7 @@ def chat(req: ChatRequest):
             max_tokens=512,
         )
 
-        answer = completion.choices[0].message["content"]
+        answer = completion.choices[0].message.content
         sources = [doc.metadata.get("source", "") for doc in docs]
 
         return {
