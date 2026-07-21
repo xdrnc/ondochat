@@ -1,9 +1,15 @@
-steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/ondochat:$COMMIT_SHA', '.']
-
-images:
-  - 'gcr.io/$PROJECT_ID/ondochat:$COMMIT_SHA'
-
 options:
   logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _IMAGE: "europe-west1-docker.pkg.dev/project-768b71b5-7a14-4876-b75/cloud-run-source-deploy/ondochat:$COMMIT_SHA"
+
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "${_IMAGE}", "."]
+
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_IMAGE}"]
+
+images:
+  - "${_IMAGE}"
