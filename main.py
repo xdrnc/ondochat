@@ -49,6 +49,9 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "gpt-4o-mini")
 MONGO_URL = os.getenv("MONGO_URL")
 mongo_client = MongoClient(MONGO_URL)
 
+# In-memory chat history (temporary until saved)
+user_chats = {}   # user_id -> list of {"role": "...", "content": "..."}
+
 
 # ---------------------------------------------------------
 # Models
@@ -183,6 +186,13 @@ Question:
 
     answer = completion.choices[0].message.content
     sources = list({d.metadata.get("source", "") for d in docs})
+
+    # alex: store conversation in memory
+    if user_id not in user_chats:
+        user_chats[user_id] = []
+
+    user_chats[user_id].append({"role": "user", "content": question})
+    user_chats[user_id].append({"role": "assistant", "content": answer})
 
     return {
         "status": "ok",
