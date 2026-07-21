@@ -1,5 +1,6 @@
 # 📘 OnDoChat — Multi‑User Login‑Based RAG System
-(test api in: https://ondochat.onrender.com/docs)
+(test api in: https://ondochat-git-1066973804646.europe-west1.run.app/docs)
+https://ondochat.onrender.com/docs (not currently working due to memory issue)
 
 ## 🔧 Overview
 OnDoChat is a multi‑user Retrieval‑Augmented Generation (RAG) backend built with FastAPI.  
