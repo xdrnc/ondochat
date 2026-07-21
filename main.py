@@ -247,7 +247,7 @@ def chat(req: ChatRequest):
     try:
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-        docs = retriever.get_relevant_documents(question)
+        docs = retriever.invoke(question)
         context = "\n\n".join([d.page_content for d in docs])
 
         prompt = f"""
