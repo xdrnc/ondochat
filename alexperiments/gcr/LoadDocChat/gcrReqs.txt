@@ -7,13 +7,13 @@ langchain-community
 langchain-text-splitters
 langchain-classic
 
+pypdf
 sentence-transformers
 faiss-cpu
 huggingface-hub
 
-python-multipart
-python-dotenv
-
-groq
 pymongo
-pdfplumber
+python-multipart
+groq
+
+python-dotenv
