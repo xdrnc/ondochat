@@ -222,10 +222,11 @@ def save_chat(user_id: str):
     if user_id not in user_chats or len(user_chats[user_id]) == 0:
         return {"status": "error", "message": "No chat history to save."}
 
-    history_col.insert_one({
-        "user_id": user_id,
-        "conversation": user_chats[user_id]
-    })
+    history_col.update_one(
+        {"user_id": user_id},  # find existing document
+        {"$set": {"conversation": user_chats[user_id]}},  # overwrite conversation
+        upsert=True  # create if not exists
+    )
 
     return {"status": "ok", "message": "Chat history saved."}
 
