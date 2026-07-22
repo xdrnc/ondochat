@@ -22,7 +22,7 @@ from pymongo import MongoClient
 # Setup
 # ---------------------------------------------------------
 
-app = FastAPI(title="OnDoChat Lazy-Init Backend")
+app = FastAPI(title="OnDoChat Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -216,7 +216,7 @@ def mongo_test():
 
 @app.post("/save")
 def save_chat(user_id: str):
-    db = mongo_client["ondochat"]
+    db = mongo_client["OnDoChat"]
     history_col = db["history"]
 
     if user_id not in user_chats or len(user_chats[user_id]) == 0:
@@ -231,7 +231,7 @@ def save_chat(user_id: str):
 
 @app.get("/history")
 def get_history(user_id: str):
-    db = mongo_client["ondochat"]
+    db = mongo_client["OnDoChat"]
     history_col = db["history"]
 
     docs = list(history_col.find({"user_id": user_id}, {"_id": 0}))
